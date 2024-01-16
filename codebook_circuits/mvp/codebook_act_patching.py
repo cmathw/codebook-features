@@ -19,7 +19,7 @@ from transformer_lens.hook_points import HookPoint
 
 ## Activation Patching Implementation
 def act_patch_attn_codebook(
-    orig_codebook: Float[Tensor, "batch pos codes"],
+    activation: Float[Tensor, "batch pos codes"],
     position: int,
     hook: HookPoint,
     new_cache: ActivationCache,
@@ -28,18 +28,16 @@ def act_patch_attn_codebook(
     Patch over the codebook at a specific layer and head index with a new codebook (ie. a codebook associated with a corrupted prompt run)
 
     Args:
-        orig_codebook (Float[Tensor, "batch pos codes"]): Original Codebook
-        orig_codebook_layer (int): Original Codebook Layer
-        orig_codebook_head_idx (int): Original Codebook Head Index
-        positions (int): Sequence position to patch over
+        activation (Float[Tensor, "batch pos codes"]): Activation to patch over
+        position (int): Sequence position to patch over
         hook (HookPoint): TransformerLens Hook Point
         new_cache (ActivationCache): New Activation Cache (associated with a corrupted prompt run for example)
 
     Return:
         Float[Tensor, "batch pos codes"]: New Codebook
     """
-    orig_codebook[:, position, :] = new_cache[hook.name][:, position, :]
-    return orig_codebook
+    activation[:, position, :] = new_cache[hook.name][:, position, :]
+    return activation
 
 
 def codebook_activation_patcher(

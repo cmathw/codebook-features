@@ -2,12 +2,11 @@ from functools import partial
 from typing import List, Optional, Tuple, Union
 
 import torch as t
-from codebook_circuits.mvp.data import TravelToCityDataset
 from codebook_circuits.mvp.more_tl_mods import get_act_name
-from codebook_features import models
+from codebook_features.models import HookedTransformerCodebookModel
 from jaxtyping import Float, Int
 from torch import Tensor
-from transformer_lens import ActivationCache, HookedTransformer
+from transformer_lens import ActivationCache
 from transformer_lens.hook_points import HookPoint
 
 # This implementation takes inspiration from here:
@@ -87,10 +86,21 @@ def hook_fn_add_activation_to_ctx(
 
 
 def get_orig_new_cache_and_logits(
-    codebook_model: HookedTransformer,
+    codebook_model: HookedTransformerCodebookModel,
     orig_input: Union[str, List[str], Int[Tensor, "batch pos"]],
     new_input: Union[str, List[str], Int[Tensor, "batch pos"]],
 ) -> Tuple[ActivationCache, ActivationCache]:
+    """
+    Get original and new cache and logits from a model run with cache
+
+    Args:
+        codebook_model (HookedTransformer): Model to run with cache
+        orig_input (Union[str, List[str], Int[Tensor, "batch pos"]]): Original input to the model
+        new_input (Union[str, List[str], Int[Tensor, "batch pos"]]): New input to the model
+
+    Returns:
+        Tuple[ActivationCache, ActivationCache, Float[Tensor, "batch pos d_vocab"], Float[Tensor, "batch pos d_vocab"]]: Original and new cache and logits
+    """
     # Run model with cache to get original and new cache and logits
     orig_logits, orig_cache = codebook_model.run_with_cache(
         orig_input, return_type="logits"
@@ -109,17 +119,27 @@ def get_orig_new_cache_and_logits(
 def get_activation_name(
     name: Tuple[str, Optional[Union[int, str]], Optional[str]]
 ) -> str:
+    """
+    Get the full activation name from a tuple of activation name components
+    Args:
+        name (Tuple[str, Optional[Union[int, str]], Optional[str]]): Tuple of activation name components
+
+    Returns:
+        str: Full activation name
+    """
+
     return get_act_name(*name) if len(name) > 1 else get_act_name(name[0])
 
 
 def slow_single_path_patch(
-    codebook_model: HookedTransformer,
+    codebook_model: HookedTransformerCodebookModel,
     orig_input: Union[str, List[str], Int[Tensor, "batch pos"]],
     new_input: Union[str, List[str], Int[Tensor, "batch pos"]],
     sender_name: Tuple[str, Optional[Union[int, str]], Optional[str]],
     receiver_name: Tuple[str, Optional[Union[int, str]], Optional[str]],
     seq_pos: Optional[Int[Tensor, "batch pos"]] = None,
-) -> Float[Tensor, "batch pos d_vocab"]:
+    test_mode: bool = False,
+) -> Union[Float[Tensor, "batch pos d_vocab"], ActivationCache]:
     """
     Implement a slow but easy to test version of path patching between two codebooks.
     This implementation only patches one path (from a single codebook to another single codebook).
@@ -281,7 +301,8 @@ def slow_single_path_patch(
 
     # Clear hooks  and contextfor safety
     codebook_model.reset_hooks(clear_contexts=True)
-
+    if test_mode:
+        return patched_cache
     return patched_logits
 
 
