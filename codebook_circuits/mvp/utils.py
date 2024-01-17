@@ -1,3 +1,7 @@
+import time
+from functools import wraps
+from typing import Callable
+
 import torch as t
 from codebook_circuits.mvp.data import TravelToCityDataset
 from codebook_features import models
@@ -100,3 +104,15 @@ def setup_pythia410M_hooked_model() -> HookedTransformerCodebookModel:
     cb_model = cb_model.to(device).eval()
 
     return cb_model
+
+
+def time_a_fn(fn: Callable) -> Callable:
+    @wraps(fn)
+    def timed_fn(*args, **kwargs):
+        start = time.time()
+        result = fn(*args, **kwargs)
+        end = time.time()
+        print(f"{fn.__name__} took {end - start} seconds")
+        return result
+
+    return timed_fn
