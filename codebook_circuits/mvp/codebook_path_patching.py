@@ -3,6 +3,7 @@ from typing import List, Optional, Tuple, Union
 
 import torch as t
 from codebook_circuits.mvp.more_tl_mods import get_act_name
+from codebook_circuits.mvp.utils import time_a_fn
 from codebook_features.models import HookedTransformerCodebookModel
 from jaxtyping import Float, Int
 from torch import Tensor
@@ -131,22 +132,23 @@ def get_activation_name(
     return get_act_name(*name) if len(name) > 1 else get_act_name(name[0])
 
 
-def slow_single_path_patch(
+# time function
+# @time_a_fn
+def single_path_patch(
     codebook_model: HookedTransformerCodebookModel,
     orig_input: Union[str, List[str], Int[Tensor, "batch pos"]],
     new_input: Union[str, List[str], Int[Tensor, "batch pos"]],
     sender_name: Tuple[str, Optional[Union[int, str]], Optional[str]],
     receiver_name: Tuple[str, Optional[Union[int, str]], Optional[str]],
     seq_pos: Optional[Int[Tensor, "batch pos"]] = None,
+    orig_cache: Optional[ActivationCache] = None,
+    new_cache: Optional[ActivationCache] = None,
     test_mode: bool = False,
 ) -> Union[Float[Tensor, "batch pos d_vocab"], ActivationCache]:
     """
-    Implement a slow but easy to test version of path patching between two codebooks.
+    Implement an easy test version of path patching between two codebooks.
     This implementation only patches one path (from a single codebook to another single codebook).
     It patches across either all sequence positions for each codebook or a single sequence position for each codebook.
-
-    It is slow because we calculate both orig and new activations for each codebook (instead of providing)
-    these caches from the outset. We also include many assert comparisons to verify that activations are what we expect them to be.
 
     Args:
         codebook_model: Model on which we are performing path patching.
@@ -157,11 +159,20 @@ def slow_single_path_patch(
             eg. (blocks.0.attn.codebook_layer.codebook.1.hook_codebook_ids)
             - Abbreviated activation name
             eg. ("cb_1", 2) for codebook head idx 1, layer 2
-        receiver_codebooks:  The node for which we are patching to given as either
+        receiver_name:  The node for which we are patching to given as either
             - Full activation name (same as key found in Activation Cache)
             eg. (blocks.23.hook_resid_post)
             - Abbreviated activation name
             eg. ("resid_post", 23).
+        seq_pos: Sequence position to patch over. If None, patch over all sequence positions.
+        orig_cache: Original cache to use for patching. Should be supplied if not running test_mode.
+        new_cache: New cache to use for patching. Should be supplied if not running test_mode.
+        test_mode:
+            If True, will run in test mode and return patched logits and cache.
+            If False, will run in production mode and return patched logits only.
+            It is slow because we calculate both orig and new activations for each codebook (instead of providing)
+            these caches from the outset. We also include many assert comparisons to verify that activations are what we expect them to be.
+            NOTE: Test mode takes approximately 2x as long to run.
 
     Returns:
         Patched Logits: The logits associated with the model run on the original input but
@@ -172,9 +183,13 @@ def slow_single_path_patch(
     codebook_model.reset_hooks()
 
     # Get original and new cache objects
-    orig_cache, orig_logits, new_cache, new_logits = get_orig_new_cache_and_logits(
-        codebook_model, orig_input, new_input
-    )
+    if test_mode:
+        orig_cache, orig_logits, new_cache, new_logits = get_orig_new_cache_and_logits(
+            codebook_model, orig_input, new_input
+        )
+
+    if not test_mode and (orig_cache is None or new_cache is None):
+        raise ValueError("If not in test mode, must provide orig_cache and new_cache")
 
     # Get codebook activation names
     sender_activation_name = get_activation_name(sender_name)
@@ -182,10 +197,11 @@ def slow_single_path_patch(
 
     # Store the original and new activations for the sender and receiver codebooks.
     # We do this for testing purposes.
-    sender_orig_activations = orig_cache[sender_activation_name]
-    receiver_orig_activations = orig_cache[receiver_activation_name]
-    sender_new_activations = new_cache[sender_activation_name]
-    receiver_new_activations = new_cache[receiver_activation_name]
+    if test_mode:
+        sender_orig_activations = orig_cache[sender_activation_name]
+        receiver_orig_activations = orig_cache[receiver_activation_name]
+        sender_new_activations = new_cache[sender_activation_name]
+        receiver_new_activations = new_cache[receiver_activation_name]
 
     # Add hook to patch sender activations and freeze rest
     codebook_model.add_hook(
@@ -200,12 +216,13 @@ def slow_single_path_patch(
     )
 
     # Add hook to add sender activations to context
-    codebook_model.add_hook(
-        name=sender_activation_name,
-        hook=partial(
-            hook_fn_add_activation_to_ctx, user_def_name="sender_activations_pre"
-        ),
-    )
+    if test_mode:
+        codebook_model.add_hook(
+            name=sender_activation_name,
+            hook=partial(
+                hook_fn_add_activation_to_ctx, user_def_name="sender_activations_pre"
+            ),
+        )
 
     # Add hook to add receiver activations to context
     codebook_model.add_hook(
@@ -219,19 +236,20 @@ def slow_single_path_patch(
     _ = codebook_model.run_with_hooks(orig_input, return_type=None)
 
     # Get activations from context for comparison asserts
-    sender_activations_pre = codebook_model.hook_dict[sender_activation_name].ctx[
-        "sender_activations_pre"
-    ]
-    receiver_activations_pre = codebook_model.hook_dict[receiver_activation_name].ctx[
-        "receiver_activations_pre"
-    ]
+    if test_mode:
+        sender_activations_pre = codebook_model.hook_dict[sender_activation_name].ctx[
+            "sender_activations_pre"
+        ]
+        receiver_activations_pre = codebook_model.hook_dict[
+            receiver_activation_name
+        ].ctx["receiver_activations_pre"]
 
-    # The sender activations should be equal to the new activations, the receiver activations should NOT be equal to the original activations OR equal to the new activations
-    assert t.equal(
-        sender_activations_pre[:, seq_pos], sender_new_activations[:, seq_pos]
-    )
-    assert not t.equal(receiver_activations_pre, receiver_orig_activations)
-    assert not t.equal(receiver_activations_pre, receiver_new_activations)
+        # The sender activations should be equal to the new activations, the receiver activations should NOT be equal to the original activations OR equal to the new activations
+        assert t.equal(
+            sender_activations_pre[:, seq_pos], sender_new_activations[:, seq_pos]
+        )
+        assert not t.equal(receiver_activations_pre, receiver_orig_activations)
+        assert not t.equal(receiver_activations_pre, receiver_new_activations)
 
     # Clear out the previous hooks but keep the context
     codebook_model.reset_hooks(clear_contexts=False)
@@ -246,20 +264,21 @@ def slow_single_path_patch(
     )
 
     # Add hook to add sender activations to context
-    codebook_model.add_hook(
-        name=sender_activation_name,
-        hook=partial(
-            hook_fn_add_activation_to_ctx, user_def_name="sender_activations_post"
-        ),
-    )
+    if test_mode:
+        codebook_model.add_hook(
+            name=sender_activation_name,
+            hook=partial(
+                hook_fn_add_activation_to_ctx, user_def_name="sender_activations_post"
+            ),
+        )
 
-    # Add hook to add receiver activations to context
-    codebook_model.add_hook(
-        name=receiver_activation_name,
-        hook=partial(
-            hook_fn_add_activation_to_ctx, user_def_name="receiver_activations_post"
-        ),
-    )
+        # Add hook to add receiver activations to context
+        codebook_model.add_hook(
+            name=receiver_activation_name,
+            hook=partial(
+                hook_fn_add_activation_to_ctx, user_def_name="receiver_activations_post"
+            ),
+        )
 
     # Get patched logits and cache
     patched_logits, patched_cache = codebook_model.run_with_cache(
@@ -270,39 +289,41 @@ def slow_single_path_patch(
     patched_logits = patched_logits.detach()
 
     # Get activations from context for comparison asserts
-    sender_activations_post = codebook_model.hook_dict[sender_activation_name].ctx[
-        "sender_activations_post"
-    ]
-    receiver_activations_post = codebook_model.hook_dict[receiver_activation_name].ctx[
-        "receiver_activations_post"
-    ]
+    if test_mode:
+        sender_activations_post = codebook_model.hook_dict[sender_activation_name].ctx[
+            "sender_activations_post"
+        ]
+        receiver_activations_post = codebook_model.hook_dict[
+            receiver_activation_name
+        ].ctx["receiver_activations_post"]
 
-    # The sender activations should be back to the original activations, the receiver activations should equal neither new or original activations
-    assert t.equal(sender_activations_post, sender_orig_activations)
-    assert not t.equal(receiver_activations_post, receiver_orig_activations)
-    assert not t.equal(receiver_activations_post, receiver_new_activations)
+        # The sender activations should be back to the original activations, the receiver activations should equal neither new or original activations
+        assert t.equal(sender_activations_post, sender_orig_activations)
+        assert not t.equal(receiver_activations_post, receiver_orig_activations)
+        assert not t.equal(receiver_activations_post, receiver_new_activations)
 
-    # We expect all activations up to the receiver to be equal to the original activations
-    # We expect all activations after the receiver to NOT be equal to either original or new activations
-    for hook_name, cache in patched_cache.items():
-        if "blocks" in hook_name:
-            hook_layer = int(hook_name.split(".")[1])
-            receiver_layer = int(receiver_activation_name.split(".")[1])
-            if hook_layer < receiver_layer:
-                assert t.equal(cache, orig_cache[hook_name])
-            if hook_layer > receiver_layer:
-                if seq_pos is None:
-                    assert not t.equal(cache, orig_cache[hook_name])
-                assert not t.equal(cache, new_cache[hook_name])
+        # We expect all activations up to the receiver to be equal to the original activations
+        # We expect all activations after the receiver to NOT be equal to either original or new activations
+        for hook_name, cache in patched_cache.items():
+            if "blocks" in hook_name:
+                hook_layer = int(hook_name.split(".")[1])
+                receiver_layer = int(receiver_activation_name.split(".")[1])
+                if hook_layer < receiver_layer:
+                    assert t.equal(cache, orig_cache[hook_name])
+                if hook_layer > receiver_layer:
+                    if seq_pos is None:
+                        assert not t.equal(cache, orig_cache[hook_name])
+                    assert not t.equal(cache, new_cache[hook_name])
 
-    # We expect that patched logits will not be equal to either the original or new logits
-    assert not t.equal(patched_logits, orig_logits)
-    assert not t.equal(patched_logits, new_logits)
+        # We expect that patched logits will not be equal to either the original or new logits
+        assert not t.equal(patched_logits, orig_logits)
+        assert not t.equal(patched_logits, new_logits)
 
     # Clear hooks  and contextfor safety
     codebook_model.reset_hooks(clear_contexts=True)
     if test_mode:
-        return patched_cache
+        return patched_logits, patched_cache
+
     return patched_logits
 
 

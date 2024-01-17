@@ -1,5 +1,3 @@
-# TODO: Re-write Tests
-
 from functools import partial
 
 import pytest
@@ -12,7 +10,7 @@ from codebook_circuits.mvp.codebook_path_patching import (
     hook_fn_add_activation_to_ctx,
     hook_fn_generic_patch_or_freeze,
     hook_fn_generic_patching_from_context,
-    slow_single_path_patch,
+    single_path_patch,
 )
 from codebook_circuits.mvp.data import TravelToCityDataset
 from transformer_lens import HookedTransformer
@@ -136,7 +134,7 @@ def test_hook_fn_add_activation_to_ctx(tiny_dataset_and_model):
     )
 
 
-def test_slow_single_path_patch_logits(tiny_dataset_and_model):
+def test_single_path_patch_logits(tiny_dataset_and_model):
     (
         tiny_model,
         orig_tokens,
@@ -149,21 +147,21 @@ def test_slow_single_path_patch_logits(tiny_dataset_and_model):
     sender = ("blocks.1.hook_resid_post",)
     receiver = ("blocks.4.hook_resid_pre",)
     seq_pos = -1
-    patched_logits = slow_single_path_patch(
+    patched_logits, _ = single_path_patch(
         codebook_model=tiny_model,
         orig_input=orig_tokens,
         new_input=new_tokens,
         sender_name=sender,
         receiver_name=receiver,
         seq_pos=seq_pos,
-        test_mode=False,
+        test_mode=True,
     )
 
     assert not t.equal(patched_logits, orig_logits)
     assert not t.equal(patched_logits, new_logits)
 
 
-def test_slow_single_path_patch_cache(tiny_dataset_and_model):
+def test_single_path_patch_cache(tiny_dataset_and_model):
     (
         tiny_model,
         orig_tokens,
@@ -176,7 +174,7 @@ def test_slow_single_path_patch_cache(tiny_dataset_and_model):
     sender = ("blocks.1.hook_resid_post",)
     receiver = ("blocks.4.hook_resid_pre",)
     seq_pos = -1
-    cache = slow_single_path_patch(
+    _, cache = single_path_patch(
         codebook_model=tiny_model,
         orig_input=orig_tokens,
         new_input=new_tokens,
