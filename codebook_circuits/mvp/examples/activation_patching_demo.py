@@ -56,7 +56,7 @@ cb_patching_array = iter_codebook_act_patching(
     patch_position=-1,
 )
 
-cb_patching_array_np = cb_patching_array.numpy()
+cb_patching_array_np = cb_patching_array.cpu().numpy()
 heatmap = go.Heatmap(z=cb_patching_array_np, colorscale="RdBu")
 fig = go.Figure(data=[heatmap])
 fig.update_xaxes(title_text="Codebook Head Index")

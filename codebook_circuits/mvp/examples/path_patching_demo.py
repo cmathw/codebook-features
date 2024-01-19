@@ -7,16 +7,19 @@ from codebook_circuits.mvp.utils import (
     time_a_fn,
 )
 
+DEVICE = t.device("cuda")
+print(DEVICE)
 import plotly.graph_objects as go
 
 # Set up model
 cb_model = setup_pythia410M_hooked_model()
+cb_model.to(DEVICE)
 
 ## Creating some data for testing and development
 dataset = TravelToCityDataset(n_examples=50)
 responses = dataset.correct_incorrects
 incorrect_correct_toks = t.cat(
-    [cb_model.to_tokens(response, prepend_bos=False).T for response in responses]
+    [cb_model.to_tokens(response, prepend_bos=False).T.to(DEVICE) for response in responses]
 )
 orig_input = dataset.clean_prompts
 new_input = dataset.corrupted_prompts
@@ -67,11 +70,11 @@ cb_patching_array = iter_codebook_patch_patching(
     patch_position = -1,
     receiver_name = ("resid_post", 23))
 
-cb_patching_array_np = cb_patching_array.numpy()
+cb_patching_array_np = cb_patching_array.cpu().numpy()
 heatmap = go.Heatmap(z=cb_patching_array_np, colorscale="RdBu")
 fig = go.Figure(data=[heatmap])
 fig.update_xaxes(title_text="Codebook Head Index")
 fig.update_yaxes(title_text="Model Layer")
-fig.update_layout(title_text="Activation Patching CodeBooks")
+fig.update_layout(title_text="Path Patching CodeBooks")
 fig.show()
 
