@@ -1190,7 +1190,7 @@ class CodebookModelConfig(transformers.PretrainedConfig):
         per_layer_codebooks = len(self.codebook_at)
 
         for key in ["codebook_type", "num_codebooks", "k_codebook", "num_codes"]:
-            if isinstance(getattr(self, key), Union[list, tuple]):
+            if isinstance(getattr(self, key), list) or isinstance(getattr(self, key), tuple):                
                 if len(getattr(self, key)) != per_layer_codebooks:
                     raise ValueError(
                         f"length of {key} must match length of `codebook_at`."

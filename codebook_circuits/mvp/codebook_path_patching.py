@@ -3,12 +3,14 @@ from typing import List, Optional, Tuple, Union
 
 import torch as t
 from codebook_circuits.mvp.more_tl_mods import get_act_name
-from codebook_circuits.mvp.utils import time_a_fn
+from codebook_circuits.mvp.utils import time_a_fn, logit_change_metric
 from codebook_features.models import HookedTransformerCodebookModel
 from jaxtyping import Float, Int
 from torch import Tensor
 from transformer_lens import ActivationCache
 from transformer_lens.hook_points import HookPoint
+from torch import zeros
+from tqdm import tqdm
 
 # This implementation takes inspiration from here:
 # https://github.com/callummcdougall/path_patching/blob/main/path_patching.py
@@ -327,5 +329,58 @@ def single_path_patch(
     return patched_logits
 
 
-def fast_single_path_patch():
-    pass
+def iter_codebook_patch_patching(
+    codebook_model: HookedTransformerCodebookModel,
+    orig_input: Float[Tensor, "batch pos d_model"],
+    new_input: Union[str, List[str], Int[Tensor, "batch pos"]],
+    incorrect_correct_toks: Int[Tensor, "batch 2"],
+    response_position: int,
+    patch_position: int,
+    receiver_name: Tuple[str, Optional[Union[int, str]], Optional[str]] = ("resid_post", 23),
+) -> Float[Tensor, "layer cb_head_idx"]:
+    """
+    Iteratively activation patch over each codebook for a given position in each layer and head index.
+
+    Args:
+        orig_tokens (Tensor): Original tokens (ie. clean tokens), shape (batch, pos, d_model)
+        new_cache (ActivationCache): New Activation Cache (associated with a corrupted prompt run for example)
+        position (int): Position to Patch Over
+
+    Returns:
+        Float[Tensor, "layer cb_head_idx"]: A performance metric for each layer and head index
+    """
+    orig_logits, orig_cache = codebook_model.run_with_cache(orig_input)
+    _, new_cache = codebook_model.run_with_cache(new_input)
+    n_layers = codebook_model.cfg.n_layers
+    n_heads = codebook_model.cfg.n_heads
+    codebook_patch_array = zeros(
+        n_layers,
+        n_heads,
+        dtype=t.float32,
+        device=codebook_model.cfg.device,
+        requires_grad=False,
+    )
+    for sender_layer in tqdm(range(n_layers), desc="Iterating over Model Layers"):
+        for sender_head_idx in range(n_heads):
+            patched_logits = single_path_patch(
+                codebook_model=codebook_model,
+                orig_input=orig_input,
+                new_input=new_input,
+                sender_name=(f"cb_{sender_head_idx}", sender_layer),
+                receiver_name=receiver_name,
+                seq_pos=patch_position,
+                orig_cache=orig_cache,
+                new_cache=new_cache,
+                test_mode=False
+            )
+
+            perf_metric = logit_change_metric(
+                orig_logits=orig_logits,
+                new_logits=patched_logits,
+                incorrect_correct_toks=incorrect_correct_toks,
+                answer_position=response_position,
+            )
+
+            codebook_patch_array[sender_layer, sender_head_idx] = perf_metric
+
+    return codebook_patch_array
